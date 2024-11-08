@@ -15,22 +15,30 @@
 #include "driver/spi_slave_hd.h"
 #include "hal/spi_slave_hd_hal.h"
 
-
 #if (SOC_SPI_PERIPH_NUM == 2)
 #define VALID_HOST(x) ((x) == SPI2_HOST)
 #elif (SOC_SPI_PERIPH_NUM == 3)
 #define VALID_HOST(x) ((x) >= SPI2_HOST && (x) <= SPI3_HOST)
 #endif
-#define SPIHD_CHECK(cond,warn,ret) do{if(!(cond)){ESP_LOGE(TAG, warn); return ret;}} while(0)
+#define SPIHD_CHECK(cond, warn, ret) \
+    do                               \
+    {                                \
+        if (!(cond))                 \
+        {                            \
+            ESP_LOGE(TAG, warn);     \
+            return ret;              \
+        }                            \
+    } while (0)
 
-typedef struct {
+typedef struct
+{
     bool dma_enabled;
     int max_transfer_sz;
     uint32_t flags;
     portMUX_TYPE int_spinlock;
     intr_handle_t intr;
 #if SOC_GDMA_SUPPORTED
-    gdma_channel_handle_t gdma_handle_tx;   //varible for storge gdma handle
+    gdma_channel_handle_t gdma_handle_tx; // varible for storge gdma handle
     gdma_channel_handle_t gdma_handle_rx;
 #endif
     intr_handle_t intr_dma;
@@ -82,7 +90,8 @@ esp_err_t spi_slave_hd_init(spi_host_device_t host_id, const spi_bus_config_t *b
     SPIHD_CHECK(spi_chan_claimed, "host already in use", ESP_ERR_INVALID_STATE);
 
     spi_slave_hd_slot_t *host = heap_caps_calloc(1, sizeof(spi_slave_hd_slot_t), MALLOC_CAP_INTERNAL);
-    if (host == NULL) {
+    if (host == NULL)
+    {
         ret = ESP_ERR_NO_MEM;
         goto cleanup;
     }
@@ -90,20 +99,23 @@ esp_err_t spi_slave_hd_init(spi_host_device_t host_id, const spi_bus_config_t *b
     host->int_spinlock = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
     host->dma_enabled = (config->dma_chan != SPI_DMA_DISABLED);
 
-    if (host->dma_enabled) {
+    if (host->dma_enabled)
+    {
         ret = spicommon_dma_chan_alloc(host_id, config->dma_chan, &actual_tx_dma_chan, &actual_rx_dma_chan);
-        if (ret != ESP_OK) {
+        if (ret != ESP_OK)
+        {
             goto cleanup;
         }
     }
 
     ret = spicommon_bus_initialize_io(host_id, bus_config, SPICOMMON_BUSFLAG_SLAVE | bus_config->flags, &host->flags);
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         goto cleanup;
     }
     gpio_set_direction(config->spics_io_num, GPIO_MODE_INPUT);
     spicommon_cs_initialize(host_id, config->spics_io_num, 0,
-                            !(bus_config->flags & SPICOMMON_BUSFLAG_NATIVE_PINS));
+                            !(bus_config->flags & SPICOMMON_BUSFLAG_NATIVE_PINS), false);
     host->append_mode = append_mode;
 
     spi_slave_hd_hal_config_t hal_config = {
@@ -119,98 +131,118 @@ esp_err_t spi_slave_hd_init(spi_host_device_t host_id, const spi_bus_config_t *b
         .rx_lsbfirst = (config->flags & SPI_SLAVE_HD_TXBIT_LSBFIRST),
     };
 
-    if (host->dma_enabled) {
-        //Malloc for all the DMA descriptors
+    if (host->dma_enabled)
+    {
+        // Malloc for all the DMA descriptors
         uint32_t total_desc_size = spi_slave_hd_hal_get_total_desc_size(&host->hal, bus_config->max_transfer_sz);
         host->hal.dmadesc_tx = heap_caps_malloc(total_desc_size, MALLOC_CAP_DMA);
         host->hal.dmadesc_rx = heap_caps_malloc(total_desc_size, MALLOC_CAP_DMA);
-        if (!host->hal.dmadesc_tx || !host->hal.dmadesc_rx) {
+        if (!host->hal.dmadesc_tx || !host->hal.dmadesc_rx)
+        {
             ret = ESP_ERR_NO_MEM;
             goto cleanup;
         }
 
-        //Get the actual SPI bus transaction size in bytes.
+        // Get the actual SPI bus transaction size in bytes.
         host->max_transfer_sz = spi_salve_hd_hal_get_max_bus_size(&host->hal);
-    } else {
-        //We're limited to non-DMA transfers: the SPI work registers can hold 64 bytes at most.
+    }
+    else
+    {
+        // We're limited to non-DMA transfers: the SPI work registers can hold 64 bytes at most.
         host->max_transfer_sz = 0;
     }
 
-    //Init the hal according to the hal_config set above
+    // Init the hal according to the hal_config set above
     spi_slave_hd_hal_init(&host->hal, &hal_config);
 
 #ifdef CONFIG_PM_ENABLE
     ret = esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0, "spi_slave", &host->pm_lock);
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         goto cleanup;
     }
     // Lock APB frequency while SPI slave driver is in use
     esp_pm_lock_acquire(host->pm_lock);
-#endif //CONFIG_PM_ENABLE
+#endif // CONFIG_PM_ENABLE
 
-    //Create Queues and Semaphores
+    // Create Queues and Semaphores
     host->tx_ret_queue = xQueueCreate(config->queue_size, sizeof(spi_slave_hd_data_t *));
     host->rx_ret_queue = xQueueCreate(config->queue_size, sizeof(spi_slave_hd_data_t *));
-    if (!host->append_mode) {
+    if (!host->append_mode)
+    {
         host->tx_trans_queue = xQueueCreate(config->queue_size, sizeof(spi_slave_hd_data_t *));
         host->rx_trans_queue = xQueueCreate(config->queue_size, sizeof(spi_slave_hd_data_t *));
-        if (!host->tx_trans_queue || !host->rx_trans_queue) {
+        if (!host->tx_trans_queue || !host->rx_trans_queue)
+        {
             ret = ESP_ERR_NO_MEM;
             goto cleanup;
         }
-    } else {
+    }
+    else
+    {
         host->tx_cnting_sem = xSemaphoreCreateCounting(config->queue_size, config->queue_size);
         host->rx_cnting_sem = xSemaphoreCreateCounting(config->queue_size, config->queue_size);
-        if (!host->tx_cnting_sem || !host->rx_cnting_sem) {
+        if (!host->tx_cnting_sem || !host->rx_cnting_sem)
+        {
             ret = ESP_ERR_NO_MEM;
             goto cleanup;
         }
     }
 
-    //Alloc intr
-    if (!host->append_mode) {
-        //Seg mode
+    // Alloc intr
+    if (!host->append_mode)
+    {
+        // Seg mode
         ret = esp_intr_alloc(spicommon_irqsource_for_host(host_id), 0, spi_slave_hd_intr_segment,
-                                (void *)host, &host->intr);
-        if (ret != ESP_OK) {
+                             (void *)host, &host->intr);
+        if (ret != ESP_OK)
+        {
             goto cleanup;
         }
         ret = esp_intr_alloc(spicommon_irqdma_source_for_host(host_id), 0, spi_slave_hd_intr_segment,
-                                (void *)host, &host->intr_dma);
-        if (ret != ESP_OK) {
+                             (void *)host, &host->intr_dma);
+        if (ret != ESP_OK)
+        {
             goto cleanup;
         }
-    } else {
-        //Append mode
-        //On ESP32S2, `cmd7` and `cmd8` interrupts registered as spi rx & tx interrupt are from SPI DMA interrupt source.
-        //although the `cmd7` and `cmd8` interrupt on spi are registered independently here
+    }
+    else
+    {
+        // Append mode
+        // On ESP32S2, `cmd7` and `cmd8` interrupts registered as spi rx & tx interrupt are from SPI DMA interrupt source.
+        // although the `cmd7` and `cmd8` interrupt on spi are registered independently here
         ret = esp_intr_alloc(spicommon_irqsource_for_host(host_id), 0, spi_slave_hd_intr_append,
-                                (void *)host, &host->intr);
-        if (ret != ESP_OK) {
+                             (void *)host, &host->intr);
+        if (ret != ESP_OK)
+        {
             goto cleanup;
         }
 #if SOC_GDMA_SUPPORTED
         // config gmda and ISR callback for gdma supported chip
         spicommon_gdma_get_handle(host_id, &host->gdma_handle_tx, GDMA_CHANNEL_DIRECTION_TX);
         gdma_tx_event_callbacks_t tx_cbs = {
-            .on_trans_eof = spi_gdma_tx_channel_callback
-        };
+            .on_trans_eof = spi_gdma_tx_channel_callback};
         gdma_register_tx_event_callbacks(host->gdma_handle_tx, &tx_cbs, host);
 #else
         ret = esp_intr_alloc(spicommon_irqdma_source_for_host(host_id), 0, spi_slave_hd_intr_append,
-                                (void *)host, &host->intr_dma);
-        if (ret != ESP_OK) {
+                             (void *)host, &host->intr_dma);
+        if (ret != ESP_OK)
+        {
             goto cleanup;
         }
-#endif  //#if SOC_GDMA_SUPPORTED
+#endif // #if SOC_GDMA_SUPPORTED
     }
-    //Init callbacks
+    // Init callbacks
     memcpy((uint8_t *)&host->callback, (uint8_t *)&config->cb_config, sizeof(spi_slave_hd_callback_config_t));
     spi_event_t event = 0;
-    if (host->callback.cb_buffer_tx != NULL) event |= SPI_EV_BUF_TX;
-    if (host->callback.cb_buffer_rx != NULL) event |= SPI_EV_BUF_RX;
-    if (host->callback.cb_cmd9 != NULL) event |= SPI_EV_CMD9;
-    if (host->callback.cb_cmdA != NULL) event |= SPI_EV_CMDA;
+    if (host->callback.cb_buffer_tx != NULL)
+        event |= SPI_EV_BUF_TX;
+    if (host->callback.cb_buffer_rx != NULL)
+        event |= SPI_EV_BUF_RX;
+    if (host->callback.cb_cmd9 != NULL)
+        event |= SPI_EV_CMD9;
+    if (host->callback.cb_cmdA != NULL)
+        event |= SPI_EV_CMDA;
     spi_slave_hd_hal_enable_event_intr(&host->hal, event);
 
     return ESP_OK;
@@ -224,21 +256,30 @@ cleanup:
 esp_err_t spi_slave_hd_deinit(spi_host_device_t host_id)
 {
     spi_slave_hd_slot_t *host = spihost[host_id];
-    if (host == NULL) return ESP_ERR_INVALID_ARG;
+    if (host == NULL)
+        return ESP_ERR_INVALID_ARG;
 
-    if (host->tx_trans_queue) vQueueDelete(host->tx_trans_queue);
-    if (host->tx_ret_queue) vQueueDelete(host->tx_ret_queue);
-    if (host->rx_trans_queue) vQueueDelete(host->rx_trans_queue);
-    if (host->rx_ret_queue) vQueueDelete(host->rx_ret_queue);
-    if (host->tx_cnting_sem) vSemaphoreDelete(host->tx_cnting_sem);
-    if (host->rx_cnting_sem) vSemaphoreDelete(host->rx_cnting_sem);
-    if (host) {
+    if (host->tx_trans_queue)
+        vQueueDelete(host->tx_trans_queue);
+    if (host->tx_ret_queue)
+        vQueueDelete(host->tx_ret_queue);
+    if (host->rx_trans_queue)
+        vQueueDelete(host->rx_trans_queue);
+    if (host->rx_ret_queue)
+        vQueueDelete(host->rx_ret_queue);
+    if (host->tx_cnting_sem)
+        vSemaphoreDelete(host->tx_cnting_sem);
+    if (host->rx_cnting_sem)
+        vSemaphoreDelete(host->rx_cnting_sem);
+    if (host)
+    {
         free(host->hal.dmadesc_tx);
         free(host->hal.dmadesc_rx);
         esp_intr_free(host->intr);
         esp_intr_free(host->intr_dma);
 #ifdef CONFIG_PM_ENABLE
-        if (host->pm_lock) {
+        if (host->pm_lock)
+        {
             esp_pm_lock_release(host->pm_lock);
             esp_pm_lock_delete(host->pm_lock);
         }
@@ -246,7 +287,8 @@ esp_err_t spi_slave_hd_deinit(spi_host_device_t host_id)
     }
 
     spicommon_periph_free(host_id);
-    if (host->dma_enabled) {
+    if (host->dma_enabled)
+    {
         spicommon_dma_chan_free(host_id);
     }
     free(host);
@@ -271,7 +313,8 @@ static void rx_invoke(spi_slave_hd_slot_t *host)
 static inline IRAM_ATTR BaseType_t intr_check_clear_callback(spi_slave_hd_slot_t *host, spi_event_t ev, slave_cb_t cb)
 {
     BaseType_t cb_awoken = pdFALSE;
-    if (spi_slave_hd_hal_check_clear_event(&host->hal, ev) && cb) {
+    if (spi_slave_hd_hal_check_clear_event(&host->hal, ev) && cb)
+    {
         spi_slave_hd_event_t event = {.event = ev};
         cb(host->callback.arg, &event, &cb_awoken);
     }
@@ -288,8 +331,8 @@ static IRAM_ATTR void spi_slave_hd_intr_segment(void *arg)
 
     awoken |= intr_check_clear_callback(host, SPI_EV_BUF_TX, callback->cb_buffer_tx);
     awoken |= intr_check_clear_callback(host, SPI_EV_BUF_RX, callback->cb_buffer_rx);
-    awoken |= intr_check_clear_callback(host, SPI_EV_CMD9,   callback->cb_cmd9);
-    awoken |= intr_check_clear_callback(host, SPI_EV_CMDA,   callback->cb_cmdA);
+    awoken |= intr_check_clear_callback(host, SPI_EV_CMD9, callback->cb_cmd9);
+    awoken |= intr_check_clear_callback(host, SPI_EV_CMDA, callback->cb_cmdA);
 
     bool tx_done = false, rx_done = false;
     bool tx_event = false, rx_event = false;
@@ -301,9 +344,11 @@ static IRAM_ATTR void spi_slave_hd_intr_segment(void *arg)
     rx_done = host->rx_desc && rx_event;
     portEXIT_CRITICAL_ISR(&host->int_spinlock);
 
-    if (tx_done) {
+    if (tx_done)
+    {
         bool ret_queue = true;
-        if (callback->cb_sent) {
+        if (callback->cb_sent)
+        {
             spi_slave_hd_event_t ev = {
                 .event = SPI_EV_SEND,
                 .trans = host->tx_desc,
@@ -312,17 +357,20 @@ static IRAM_ATTR void spi_slave_hd_intr_segment(void *arg)
             ret_queue = callback->cb_sent(callback->arg, &ev, &cb_awoken);
             awoken |= cb_awoken;
         }
-        if (ret_queue) {
+        if (ret_queue)
+        {
             ret = xQueueSendFromISR(host->tx_ret_queue, &host->tx_desc, &awoken);
             // The return queue is full. All the data remian in send_queue + ret_queue should not be more than the queue length.
             assert(ret == pdTRUE);
         }
         host->tx_desc = NULL;
     }
-    if (rx_done) {
+    if (rx_done)
+    {
         bool ret_queue = true;
         host->rx_desc->trans_len = spi_slave_hd_hal_rxdma_seg_get_len(hal);
-        if (callback->cb_recv) {
+        if (callback->cb_recv)
+        {
             spi_slave_hd_event_t ev = {
                 .event = SPI_EV_RECV,
                 .trans = host->rx_desc,
@@ -331,7 +379,8 @@ static IRAM_ATTR void spi_slave_hd_intr_segment(void *arg)
             ret_queue = callback->cb_recv(callback->arg, &ev, &cb_awoken);
             awoken |= cb_awoken;
         }
-        if (ret_queue) {
+        if (ret_queue)
+        {
             ret = xQueueSendFromISR(host->rx_ret_queue, &host->rx_desc, &awoken);
             // The return queue is full. All the data remian in send_queue + ret_queue should not be more than the queue length.
             assert(ret == pdTRUE);
@@ -341,12 +390,15 @@ static IRAM_ATTR void spi_slave_hd_intr_segment(void *arg)
 
     bool tx_sent = false;
     bool rx_sent = false;
-    if (!host->tx_desc) {
+    if (!host->tx_desc)
+    {
         ret = xQueueReceiveFromISR(host->tx_trans_queue, &host->tx_desc, &awoken);
-        if (ret == pdTRUE) {
+        if (ret == pdTRUE)
+        {
             spi_slave_hd_hal_txdma(hal, host->tx_desc->data, host->tx_desc->len);
             tx_sent = true;
-            if (callback->cb_send_dma_ready) {
+            if (callback->cb_send_dma_ready)
+            {
                 spi_slave_hd_event_t ev = {
                     .event = SPI_EV_SEND_DMA_READY,
                     .trans = host->tx_desc,
@@ -357,12 +409,15 @@ static IRAM_ATTR void spi_slave_hd_intr_segment(void *arg)
             }
         }
     }
-    if (!host->rx_desc) {
+    if (!host->rx_desc)
+    {
         ret = xQueueReceiveFromISR(host->rx_trans_queue, &host->rx_desc, &awoken);
-        if (ret == pdTRUE) {
+        if (ret == pdTRUE)
+        {
             spi_slave_hd_hal_rxdma(hal, host->rx_desc->data, host->rx_desc->len);
             rx_sent = true;
-            if (callback->cb_recv_dma_ready) {
+            if (callback->cb_recv_dma_ready)
+            {
                 spi_slave_hd_event_t ev = {
                     .event = SPI_EV_RECV_DMA_READY,
                     .trans = host->rx_desc,
@@ -375,35 +430,41 @@ static IRAM_ATTR void spi_slave_hd_intr_segment(void *arg)
     }
 
     portENTER_CRITICAL_ISR(&host->int_spinlock);
-    if (tx_sent) {
+    if (tx_sent)
+    {
         spi_slave_hd_hal_enable_event_intr(hal, SPI_EV_SEND);
     }
-    if (rx_sent) {
+    if (rx_sent)
+    {
         spi_slave_hd_hal_enable_event_intr(hal, SPI_EV_RECV);
     }
     portEXIT_CRITICAL_ISR(&host->int_spinlock);
 
-    if (awoken == pdTRUE) portYIELD_FROM_ISR();
+    if (awoken == pdTRUE)
+        portYIELD_FROM_ISR();
 }
 
 static IRAM_ATTR void spi_slave_hd_append_tx_isr(void *arg)
 {
-    spi_slave_hd_slot_t *host = (spi_slave_hd_slot_t*)arg;
+    spi_slave_hd_slot_t *host = (spi_slave_hd_slot_t *)arg;
     spi_slave_hd_callback_config_t *callback = &host->callback;
     spi_slave_hd_hal_context_t *hal = &host->hal;
     BaseType_t awoken = pdFALSE;
     BaseType_t ret __attribute__((unused));
 
     spi_slave_hd_data_t *trans_desc;
-    while (1) {
+    while (1)
+    {
         bool trans_finish = false;
         trans_finish = spi_slave_hd_hal_get_tx_finished_trans(hal, (void **)&trans_desc);
-        if (!trans_finish) {
+        if (!trans_finish)
+        {
             break;
         }
 
         bool ret_queue = true;
-        if (callback->cb_sent) {
+        if (callback->cb_sent)
+        {
             spi_slave_hd_event_t ev = {
                 .event = SPI_EV_SEND,
                 .trans = trans_desc,
@@ -413,7 +474,8 @@ static IRAM_ATTR void spi_slave_hd_append_tx_isr(void *arg)
             awoken |= cb_awoken;
         }
 
-        if (ret_queue) {
+        if (ret_queue)
+        {
             ret = xQueueSendFromISR(host->tx_ret_queue, &trans_desc, &awoken);
             assert(ret == pdTRUE);
 
@@ -421,12 +483,13 @@ static IRAM_ATTR void spi_slave_hd_append_tx_isr(void *arg)
             assert(ret == pdTRUE);
         }
     }
-    if (awoken==pdTRUE) portYIELD_FROM_ISR();
+    if (awoken == pdTRUE)
+        portYIELD_FROM_ISR();
 }
 
 static IRAM_ATTR void spi_slave_hd_append_rx_isr(void *arg)
 {
-    spi_slave_hd_slot_t *host = (spi_slave_hd_slot_t*)arg;
+    spi_slave_hd_slot_t *host = (spi_slave_hd_slot_t *)arg;
     spi_slave_hd_callback_config_t *callback = &host->callback;
     spi_slave_hd_hal_context_t *hal = &host->hal;
     BaseType_t awoken = pdFALSE;
@@ -434,16 +497,19 @@ static IRAM_ATTR void spi_slave_hd_append_rx_isr(void *arg)
 
     spi_slave_hd_data_t *trans_desc;
     size_t trans_len;
-    while (1) {
+    while (1)
+    {
         bool trans_finish = false;
         trans_finish = spi_slave_hd_hal_get_rx_finished_trans(hal, (void **)&trans_desc, &trans_len);
-        if (!trans_finish) {
+        if (!trans_finish)
+        {
             break;
         }
         trans_desc->trans_len = trans_len;
 
         bool ret_queue = true;
-        if (callback->cb_recv) {
+        if (callback->cb_recv)
+        {
             spi_slave_hd_event_t ev = {
                 .event = SPI_EV_RECV,
                 .trans = trans_desc,
@@ -453,7 +519,8 @@ static IRAM_ATTR void spi_slave_hd_append_rx_isr(void *arg)
             awoken |= cb_awoken;
         }
 
-        if (ret_queue) {
+        if (ret_queue)
+        {
             ret = xQueueSendFromISR(host->rx_ret_queue, &trans_desc, &awoken);
             assert(ret == pdTRUE);
 
@@ -461,7 +528,8 @@ static IRAM_ATTR void spi_slave_hd_append_rx_isr(void *arg)
             assert(ret == pdTRUE);
         }
     }
-    if (awoken==pdTRUE) portYIELD_FROM_ISR();
+    if (awoken == pdTRUE)
+        portYIELD_FROM_ISR();
 }
 
 #if SOC_GDMA_SUPPORTED
@@ -484,20 +552,24 @@ static IRAM_ATTR void spi_slave_hd_intr_append(void *arg)
 
     // Append Mode
     portENTER_CRITICAL_ISR(&host->int_spinlock);
-    if (spi_slave_hd_hal_check_clear_event(hal, SPI_EV_RECV)) {
+    if (spi_slave_hd_hal_check_clear_event(hal, SPI_EV_RECV))
+    {
         rx_done = true;
     }
-    if (spi_slave_hd_hal_check_clear_event(hal, SPI_EV_SEND)) {
+    if (spi_slave_hd_hal_check_clear_event(hal, SPI_EV_SEND))
+    {
         // NOTE: on gdma supported chips, this flag should NOT checked out, handle entrance is only `spi_gdma_tx_channel_callback`,
         // otherwise, here should be target limited.
         tx_done = true;
     }
     portEXIT_CRITICAL_ISR(&host->int_spinlock);
 
-    if (rx_done) {
+    if (rx_done)
+    {
         spi_slave_hd_append_rx_isr(arg);
     }
-    if (tx_done) {
+    if (tx_done)
+    {
         spi_slave_hd_append_tx_isr(arg);
     }
 }
@@ -508,12 +580,16 @@ static esp_err_t get_ret_queue_result(spi_host_device_t host_id, spi_slave_chan_
     spi_slave_hd_data_t *trans;
     BaseType_t ret;
 
-    if (chan == SPI_SLAVE_CHAN_TX) {
+    if (chan == SPI_SLAVE_CHAN_TX)
+    {
         ret = xQueueReceive(host->tx_ret_queue, &trans, timeout);
-    } else {
+    }
+    else
+    {
         ret = xQueueReceive(host->rx_ret_queue, &trans, timeout);
     }
-    if (ret == pdFALSE) {
+    if (ret == pdFALSE)
+    {
         return ESP_ERR_TIMEOUT;
     }
 
@@ -531,15 +607,20 @@ esp_err_t spi_slave_hd_queue_trans(spi_host_device_t host_id, spi_slave_chan_t c
     SPIHD_CHECK(trans->len <= host->max_transfer_sz && trans->len > 0, "Invalid buffer size", ESP_ERR_INVALID_ARG);
     SPIHD_CHECK(chan == SPI_SLAVE_CHAN_TX || chan == SPI_SLAVE_CHAN_RX, "Invalid channel", ESP_ERR_INVALID_ARG);
 
-    if (chan == SPI_SLAVE_CHAN_TX) {
+    if (chan == SPI_SLAVE_CHAN_TX)
+    {
         BaseType_t ret = xQueueSend(host->tx_trans_queue, &trans, timeout);
-        if (ret == pdFALSE) {
+        if (ret == pdFALSE)
+        {
             return ESP_ERR_TIMEOUT;
         }
         tx_invoke(host);
-    } else { //chan == SPI_SLAVE_CHAN_RX
+    }
+    else
+    { // chan == SPI_SLAVE_CHAN_RX
         BaseType_t ret = xQueueSend(host->rx_trans_queue, &trans, timeout);
-        if (ret == pdFALSE) {
+        if (ret == pdFALSE)
+        {
             return ESP_ERR_TIMEOUT;
         }
         rx_invoke(host);
@@ -582,20 +663,26 @@ esp_err_t spi_slave_hd_append_trans(spi_host_device_t host_id, spi_slave_chan_t 
     SPIHD_CHECK(trans->len <= host->max_transfer_sz && trans->len > 0, "Invalid buffer size", ESP_ERR_INVALID_ARG);
     SPIHD_CHECK(chan == SPI_SLAVE_CHAN_TX || chan == SPI_SLAVE_CHAN_RX, "Invalid channel", ESP_ERR_INVALID_ARG);
 
-    if (chan == SPI_SLAVE_CHAN_TX) {
+    if (chan == SPI_SLAVE_CHAN_TX)
+    {
         BaseType_t ret = xSemaphoreTake(host->tx_cnting_sem, timeout);
-        if (ret == pdFALSE) {
+        if (ret == pdFALSE)
+        {
             return ESP_ERR_TIMEOUT;
         }
         err = spi_slave_hd_hal_txdma_append(hal, trans->data, trans->len, trans);
-    } else {
+    }
+    else
+    {
         BaseType_t ret = xSemaphoreTake(host->rx_cnting_sem, timeout);
-        if (ret == pdFALSE) {
+        if (ret == pdFALSE)
+        {
             return ESP_ERR_TIMEOUT;
         }
         err = spi_slave_hd_hal_rxdma_append(hal, trans->data, trans->len, trans);
     }
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         ESP_LOGE(TAG, "Wait until the DMA finishes its transaction");
     }
 

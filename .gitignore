@@ -99,3 +99,5 @@ managed_components
 pytest-embedded/
 # legacy one
 pytest_embedded_log/
+
+__pio_env/
